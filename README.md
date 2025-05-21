@@ -1,1 +1,1 @@
-# UW_AMATH575_XX
+# UW_AMATH575_Turing_Instability
