@@ -1,0 +1,195 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : enable
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(push_constant) uniform PushConstants
+{
+	uint   row;
+	uint   col;
+	double tau;
+	double eta;
+	double epsilon2;
+}
+push;
+
+//=== 分布函数存储 (读写) ===//
+layout(std430, binding = 0) buffer F0ABuffer
+{
+	double f0A[];
+};
+layout(std430, binding = 1) buffer F1ABuffer
+{
+	double f1A[];
+};
+layout(std430, binding = 2) buffer F2ABuffer
+{
+	double f2A[];
+};
+layout(std430, binding = 3) buffer F3ABuffer
+{
+	double f3A[];
+};
+layout(std430, binding = 4) buffer F4ABuffer
+{
+	double f4A[];
+};
+layout(std430, binding = 5) buffer F5ABuffer
+{
+	double f5A[];
+};
+layout(std430, binding = 6) buffer F6ABuffer
+{
+	double f6A[];
+};
+layout(std430, binding = 7) buffer F7ABuffer
+{
+	double f7A[];
+};
+layout(std430, binding = 8) buffer F8ABuffer
+{
+	double f8A[];
+};
+
+layout(std430, binding = 9) buffer F0BBuffer
+{
+	double f0B[];
+};
+layout(std430, binding = 10) buffer F1BBuffer
+{
+	double f1B[];
+};
+layout(std430, binding = 11) buffer F2BBuffer
+{
+	double f2B[];
+};
+layout(std430, binding = 12) buffer F3BBuffer
+{
+	double f3B[];
+};
+layout(std430, binding = 13) buffer F4BBuffer
+{
+	double f4B[];
+};
+layout(std430, binding = 14) buffer F5BBuffer
+{
+	double f5B[];
+};
+layout(std430, binding = 15) buffer F6BBuffer
+{
+	double f6B[];
+};
+layout(std430, binding = 16) buffer F7BBuffer
+{
+	double f7B[];
+};
+layout(std430, binding = 17) buffer F8BBuffer
+{
+	double f8B[];
+};
+
+layout(std430, binding = 18) readonly buffer GridSourceBuffer
+{
+	double gridSource[];
+};
+
+//=== D2Q9 模型常数 ===//
+const double weights[9] =
+	double[9](4.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0);
+
+const dvec2 directions[9] = dvec2[9](dvec2(0.0, 0.0),
+									 dvec2(1.0, 0.0),
+									 dvec2(0.0, 1.0),
+									 dvec2(-1.0, 0.0),
+									 dvec2(0.0, -1.0),
+									 dvec2(1.0, 1.0),
+									 dvec2(-1.0, 1.0),
+									 dvec2(-1.0, -1.0),
+									 dvec2(1.0, -1.0));
+
+void main()
+{
+	uint x = gl_GlobalInvocationID.x;
+	uint y = gl_GlobalInvocationID.y;
+
+	if(x >= push.col || y >= push.row)
+		return;
+
+	uint idx = y * push.col + x;
+
+	//=== Step 1: 读取当前分布函数 ===//
+	double fiA[9] = double[9](f0A[idx], f1A[idx], f2A[idx], f3A[idx], f4A[idx], f5A[idx], f6A[idx], f7A[idx], f8A[idx]);
+	double fiB[9] = double[9](f0B[idx], f1B[idx], f2B[idx], f3B[idx], f4B[idx], f5B[idx], f6B[idx], f7B[idx], f8B[idx]);
+
+	//=== Step 2: 计算宏观量 ===//
+	double rhoA = 0.0;
+	double rhoB = 0.0;
+	for(int i = 0; i < 9; ++i) {
+		rhoA += fiA[i];
+		rhoB += fiB[i];
+	}
+	rhoA += gridSource[idx];
+	rhoB += gridSource[idx];
+
+	//=== Step 3: 计算反应量 ===//
+	double dt        = 0.01;
+	double reactionA = dt * (-rhoA * rhoB * rhoB + 1.0 - rhoA);
+	double reactionB = dt * push.tau * (push.eta * rhoA * rhoB * rhoB - rhoB);
+
+	rhoA = max(rhoA, 1e-6);
+	rhoB = max(rhoB, 1e-6);
+
+	//=== Step 4: 计算力源项 (RD不需要) ===//
+	double tauA = (3.0 * 1.0) + 0.5;
+	double tauB = (3.0 * push.tau) / push.epsilon2 + 0.5;
+
+	//=== Step 5: 更新分布函数 ===//
+	for(int i = 0; i < 9; ++i) {
+		// --- A ---
+		double feqA   = weights[i] * rhoA;
+		double fA_new = fiA[i] + (feqA - fiA[i]) / tauA + weights[i] * reactionA;
+
+		// --- B ---
+		double feqB   = weights[i] * rhoB;
+		double fB_new = fiB[i] + (feqB - fiB[i]) / tauB + weights[i] * reactionB;
+
+		switch(i) {
+		case 0:
+			f0A[idx] = fA_new;
+			f0B[idx] = fB_new;
+			break;
+		case 1:
+			f1A[idx] = fA_new;
+			f1B[idx] = fB_new;
+			break;
+		case 2:
+			f2A[idx] = fA_new;
+			f2B[idx] = fB_new;
+			break;
+		case 3:
+			f3A[idx] = fA_new;
+			f3B[idx] = fB_new;
+			break;
+		case 4:
+			f4A[idx] = fA_new;
+			f4B[idx] = fB_new;
+			break;
+		case 5:
+			f5A[idx] = fA_new;
+			f5B[idx] = fB_new;
+			break;
+		case 6:
+			f6A[idx] = fA_new;
+			f6B[idx] = fB_new;
+			break;
+		case 7:
+			f7A[idx] = fA_new;
+			f7B[idx] = fB_new;
+			break;
+		case 8:
+			f8A[idx] = fA_new;
+			f8B[idx] = fB_new;
+			break;
+		}
+	}
+}

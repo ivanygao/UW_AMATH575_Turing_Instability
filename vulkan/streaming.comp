@@ -1,0 +1,202 @@
+#version 450
+#extension GL_ARB_gpu_shader_fp64 : require
+
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(push_constant) uniform PushConstants
+{
+	uint   row;
+	uint   col;
+	double tau;
+}
+push;
+
+//=== 读缓冲 (旧分布) ===//
+layout(std430, binding = 0) readonly buffer F0OldBuffer
+{
+	double f0_old[];
+};
+layout(std430, binding = 1) readonly buffer F1OldBuffer
+{
+	double f1_old[];
+};
+layout(std430, binding = 2) readonly buffer F2OldBuffer
+{
+	double f2_old[];
+};
+layout(std430, binding = 3) readonly buffer F3OldBuffer
+{
+	double f3_old[];
+};
+layout(std430, binding = 4) readonly buffer F4OldBuffer
+{
+	double f4_old[];
+};
+layout(std430, binding = 5) readonly buffer F5OldBuffer
+{
+	double f5_old[];
+};
+layout(std430, binding = 6) readonly buffer F6OldBuffer
+{
+	double f6_old[];
+};
+layout(std430, binding = 7) readonly buffer F7OldBuffer
+{
+	double f7_old[];
+};
+layout(std430, binding = 8) readonly buffer F8OldBuffer
+{
+	double f8_old[];
+};
+
+//=== 写缓冲 (新分布) ===//
+layout(std430, binding = 9) writeonly buffer F0NewBuffer
+{
+	double f0_new[];
+};
+layout(std430, binding = 10) writeonly buffer F1NewBuffer
+{
+	double f1_new[];
+};
+layout(std430, binding = 11) writeonly buffer F2NewBuffer
+{
+	double f2_new[];
+};
+layout(std430, binding = 12) writeonly buffer F3NewBuffer
+{
+	double f3_new[];
+};
+layout(std430, binding = 13) writeonly buffer F4NewBuffer
+{
+	double f4_new[];
+};
+layout(std430, binding = 14) writeonly buffer F5NewBuffer
+{
+	double f5_new[];
+};
+layout(std430, binding = 15) writeonly buffer F6NewBuffer
+{
+	double f6_new[];
+};
+layout(std430, binding = 16) writeonly buffer F7NewBuffer
+{
+	double f7_new[];
+};
+layout(std430, binding = 17) writeonly buffer F8NewBuffer
+{
+	double f8_new[];
+};
+
+//=== 网格类型与边界值 ===//
+layout(std430, binding = 18) readonly buffer GridTypeBuffer
+{
+	int gridType[];
+};
+layout(std430, binding = 19) readonly buffer GridDirchletBuffer
+{
+	double gridDirchlet[];
+};
+
+//=== D2Q9 模型常数 ===//
+const double weights[9] =
+	double[9](4.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0);
+const ivec2 directions[9] = ivec2[9](ivec2(0, 0),
+									 ivec2(1, 0),
+									 ivec2(0, 1),
+									 ivec2(-1, 0),
+									 ivec2(0, -1),
+									 ivec2(1, 1),
+									 ivec2(-1, 1),
+									 ivec2(-1, -1),
+									 ivec2(1, -1));
+const int   opposition[9] = int[9](0, 3, 4, 1, 2, 7, 8, 5, 6);
+
+uint index(uint x, uint y, uint width)
+{
+	return y * width + x;
+}
+
+double getOldF(int i, uint idx)
+{
+	switch(i) {
+	case 0: return f0_old[idx];
+	case 1: return f1_old[idx];
+	case 2: return f2_old[idx];
+	case 3: return f3_old[idx];
+	case 4: return f4_old[idx];
+	case 5: return f5_old[idx];
+	case 6: return f6_old[idx];
+	case 7: return f7_old[idx];
+	case 8: return f8_old[idx];
+	}
+	return 0.0;
+}
+
+void setNewF(int i, uint idx, double val)
+{
+	switch(i) {
+	case 0: f0_new[idx] = val; break;
+	case 1: f1_new[idx] = val; break;
+	case 2: f2_new[idx] = val; break;
+	case 3: f3_new[idx] = val; break;
+	case 4: f4_new[idx] = val; break;
+	case 5: f5_new[idx] = val; break;
+	case 6: f6_new[idx] = val; break;
+	case 7: f7_new[idx] = val; break;
+	case 8: f8_new[idx] = val; break;
+	}
+}
+
+void main()
+{
+	uint x = gl_GlobalInvocationID.x;
+	uint y = gl_GlobalInvocationID.y;
+
+	if(x >= push.col || y >= push.row)
+		return;
+
+	uint idx  = index(x, y, push.col);
+	int  type = gridType[idx];
+
+	for(int i = 0; i < 9; ++i) {
+		double val = 0.0;
+
+		if(type == 0) {  // NONE
+			ivec2 offset = directions[i];
+			int   src_x  = int(x) - offset.x;
+			int   src_y  = int(y) - offset.y;
+
+			if(src_x >= 0 && src_x < int(push.col) && src_y >= 0 && src_y < int(push.row)) {
+				uint src_idx = index(uint(src_x), uint(src_y), push.col);
+				val          = getOldF(i, src_idx);
+			}
+		} else if(type == 1) {  // BOUNCEBACK
+			val = getOldF(opposition[i], idx);
+		} else if(type == 2) {  // DIRICHLET
+			val = weights[i] * gridDirchlet[idx];
+		} else if(type == 3) {  // ADIABATIC
+			ivec2 offset = directions[i];
+			int   src_x  = int(x) - offset.x;
+			int   src_y  = int(y) - offset.y;
+
+			// 边界处，找不到邻点就 fallback 为自身
+			if(src_x >= 0 && src_x < int(push.col) && src_y >= 0 && src_y < int(push.row)) {
+				uint src_idx = index(uint(src_x), uint(src_y), push.col);
+				val          = getOldF(i, src_idx);
+			} else {
+				val = getOldF(i, idx);  // 超出边界就复制自己，防止爆炸
+			}
+		} else if(type == 4) {  // PERIODIC
+			ivec2 offset = directions[i];
+			int   src_x  = int(x) - offset.x;
+			int   src_y  = int(y) - offset.y;
+
+			uint wrap_x  = uint((int(push.col) + src_x) % int(push.col));
+			uint wrap_y  = uint((int(push.row) + src_y) % int(push.row));
+			uint src_idx = index(wrap_x, wrap_y, push.col);
+			val          = getOldF(i, src_idx);
+		}
+
+		setNewF(i, idx, val);
+	}
+}
